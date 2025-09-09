@@ -1,0 +1,285 @@
+import streamlit as st
+import cv2
+import numpy as np
+from PIL import Image
+import matplotlib.pyplot as plt
+import io
+
+# Configure Streamlit
+st.set_page_config(page_title="Image Processing GUI", layout="wide")
+
+class ImageProcessor:
+    """Compressed Image Processing Operations"""
+    
+    @staticmethod
+    def blur_operations(img, op_type, **params):
+        if op_type == "gaussian":
+            return cv2.GaussianBlur(img, (params['k'], params['k']), params['sigma'])
+        elif op_type == "median":
+            return cv2.medianBlur(img, params['k'])
+        elif op_type == "bilateral":
+            return cv2.bilateralFilter(img, params['d'], params['sc'], params['ss'])
+    
+    @staticmethod
+    def edge_detection(img, op_type, **params):
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+        if op_type == "canny":
+            return cv2.Canny(gray, params['low'], params['high'])
+        elif op_type == "sobel":
+            sx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=params['k'])
+            sy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=params['k'])
+            return np.uint8(np.sqrt(sx**2 + sy**2))
+    
+    @staticmethod
+    def morphology(img, op_type, k_size, iterations=1):
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_size, k_size))
+        ops = {"erosion": cv2.erode, "dilation": cv2.dilate,
+               "opening": lambda i,k,it: cv2.morphologyEx(i, cv2.MORPH_OPEN, k, iterations=it),
+               "closing": lambda i,k,it: cv2.morphologyEx(i, cv2.MORPH_CLOSE, k, iterations=it)}
+        return ops[op_type](img, kernel, iterations)
+    
+    @staticmethod
+    def enhancement(img, op_type, **params):
+        if op_type == "brightness":
+            return cv2.convertScaleAbs(img, alpha=params['contrast']/100, beta=params['brightness'])
+        elif op_type == "hist_eq":
+            if len(img.shape) == 3:
+                yuv = cv2.cvtColor(img, cv2.COLOR_BGR2YUV)
+                yuv[:,:,0] = cv2.equalizeHist(yuv[:,:,0])
+                return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR)
+            return cv2.equalizeHist(img)
+        elif op_type == "clahe":
+            clahe = cv2.createCLAHE(clipLimit=params['clip'], tileGridSize=(params['tile'], params['tile']))
+            if len(img.shape) == 3:
+                yuv = cv2.cvtColor(img, cv2.COLOR_BGR2YUV)
+                yuv[:,:,0] = clahe.apply(yuv[:,:,0])
+                return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR)
+            return clahe.apply(img)
+    
+    @staticmethod
+    def frequency_domain(img, op_type, **params):
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+        f = np.fft.fft2(gray)
+        fshift = np.fft.fftshift(f)
+        
+        if op_type == "fft":
+            return np.log(np.abs(fshift) + 1)
+        
+        rows, cols = gray.shape
+        crow, ccol = rows//2, cols//2
+        mask = np.zeros((rows, cols), np.uint8) if op_type == "lowpass" else np.ones((rows, cols), np.uint8)
+        
+        if op_type == "lowpass":
+            mask[crow-params['cutoff']:crow+params['cutoff'], ccol-params['cutoff']:ccol+params['cutoff']] = 1
+        else:  # highpass
+            mask[crow-params['cutoff']:crow+params['cutoff'], ccol-params['cutoff']:ccol+params['cutoff']] = 0
+        
+        fshift_filtered = fshift * mask
+        f_ishift = np.fft.ifftshift(fshift_filtered)
+        img_back = np.fft.ifft2(f_ishift)
+        return np.uint8(np.abs(img_back))
+
+def display_images(orig, proc, title1="Original", title2="Processed"):
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader(title1)
+        if len(orig.shape) == 3:
+            st.image(cv2.cvtColor(orig, cv2.COLOR_BGR2RGB), use_column_width=True)
+        else:
+            st.image(orig, use_column_width=True)
+    with col2:
+        st.subheader(title2)
+        if len(proc.shape) == 3:
+            st.image(cv2.cvtColor(proc, cv2.COLOR_BGR2RGB), use_column_width=True)
+        else:
+            st.image(proc, use_column_width=True, clamp=True)
+
+def show_histogram(img, title="Histogram"):
+    fig, ax = plt.subplots(figsize=(10, 4))
+    if len(img.shape) == 3:
+        for i, color in enumerate(['b', 'g', 'r']):
+            hist = cv2.calcHist([img], [i], None, [256], [0, 256])
+            ax.plot(hist, color=color, alpha=0.7)
+    else:
+        hist = cv2.calcHist([img], [0], None, [256], [0, 256])
+        ax.plot(hist, color='black')
+    ax.set_title(title)
+    st.pyplot(fig)
+
+def main():
+    st.title("🖼️ Image Processing Laboratory")
+    st.markdown("**Compressed GUI for Image Processing Operations**")
+    
+    # Initialize session state
+    if 'processed_img' not in st.session_state:
+        st.session_state.processed_img = None
+    
+    # Sidebar - Image Upload
+    st.sidebar.header("📁 Upload Image")
+    uploaded_file = st.sidebar.file_uploader("Choose image", type=['jpg', 'jpeg', 'png', 'bmp'])
+    
+    if uploaded_file:
+        # Load image
+        image = Image.open(uploaded_file)
+        img_array = np.array(image)
+        original = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR) if len(img_array.shape) == 3 else img_array
+        
+        # Image info
+        st.sidebar.write(f"**Shape:** {original.shape}")
+        st.sidebar.write(f"**Size:** {original.shape[1]}×{original.shape[0]}")
+        
+        # Processing tabs
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🔄 Filters", "🔍 Edges", "⚡ Morph", "🌟 Enhance", "📊 Frequency", "📈 Analysis"])
+        
+        # Filters Tab
+        with tab1:
+            filter_type = st.selectbox("Filter", ["Gaussian Blur", "Median Blur", "Bilateral Filter"])
+            
+            if filter_type == "Gaussian Blur":
+                c1, c2 = st.columns(2)
+                k = c1.slider("Kernel Size", 1, 31, 5, step=2)
+                sigma = c2.slider("Sigma", 0.1, 10.0, 1.0, 0.1)
+                if st.button("Apply Gaussian", type="primary"):
+                    processed = ImageProcessor.blur_operations(original, "gaussian", k=k, sigma=sigma)
+                    st.session_state.processed_img = processed
+                    display_images(original, processed, "Original", "Gaussian Blur")
+            
+            elif filter_type == "Median Blur":
+                k = st.slider("Kernel Size", 1, 31, 5, step=2)
+                if st.button("Apply Median", type="primary"):
+                    processed = ImageProcessor.blur_operations(original, "median", k=k)
+                    st.session_state.processed_img = processed
+                    display_images(original, processed, "Original", "Median Blur")
+            
+            else:  # Bilateral
+                c1, c2, c3 = st.columns(3)
+                d = c1.slider("Diameter", 5, 25, 9)
+                sc = c2.slider("Sigma Color", 10, 200, 75)
+                ss = c3.slider("Sigma Space", 10, 200, 75)
+                if st.button("Apply Bilateral", type="primary"):
+                    processed = ImageProcessor.blur_operations(original, "bilateral", d=d, sc=sc, ss=ss)
+                    st.session_state.processed_img = processed
+                    display_images(original, processed, "Original", "Bilateral Filter")
+        
+        # Edge Detection Tab
+        with tab2:
+            edge_method = st.selectbox("Method", ["Canny", "Sobel"])
+            
+            if edge_method == "Canny":
+                c1, c2 = st.columns(2)
+                low = c1.slider("Low Threshold", 0, 255, 50)
+                high = c2.slider("High Threshold", 0, 255, 150)
+                if st.button("Apply Canny", type="primary"):
+                    processed = ImageProcessor.edge_detection(original, "canny", low=low, high=high)
+                    st.session_state.processed_img = processed
+                    display_images(original, processed, "Original", "Canny Edges")
+            
+            else:  # Sobel
+                k = st.slider("Kernel Size", 1, 7, 3, step=2)
+                if st.button("Apply Sobel", type="primary"):
+                    processed = ImageProcessor.edge_detection(original, "sobel", k=k)
+                    st.session_state.processed_img = processed
+                    display_images(original, processed, "Original", "Sobel Edges")
+        
+        # Morphology Tab
+        with tab3:
+            morph_op = st.selectbox("Operation", ["erosion", "dilation", "opening", "closing"])
+            c1, c2 = st.columns(2)
+            k_size = c1.slider("Kernel Size", 1, 15, 5)
+            iterations = c2.slider("Iterations", 1, 10, 1)
+            
+            if st.button(f"Apply {morph_op.title()}", type="primary"):
+                processed = ImageProcessor.morphology(original, morph_op, k_size, iterations)
+                st.session_state.processed_img = processed
+                display_images(original, processed, "Original", f"{morph_op.title()}")
+        
+        # Enhancement Tab
+        with tab4:
+            enhance_type = st.selectbox("Enhancement", ["Brightness/Contrast", "Histogram Eq", "CLAHE"])
+            
+            if enhance_type == "Brightness/Contrast":
+                c1, c2 = st.columns(2)
+                brightness = c1.slider("Brightness", -100, 100, 0)
+                contrast = c2.slider("Contrast", 50, 200, 100)
+                if st.button("Apply Enhancement", type="primary"):
+                    processed = ImageProcessor.enhancement(original, "brightness", brightness=brightness, contrast=contrast)
+                    st.session_state.processed_img = processed
+                    display_images(original, processed, "Original", "Enhanced")
+            
+            elif enhance_type == "Histogram Eq":
+                if st.button("Apply Histogram Eq", type="primary"):
+                    processed = ImageProcessor.enhancement(original, "hist_eq")
+                    st.session_state.processed_img = processed
+                    display_images(original, processed, "Original", "Hist Equalized")
+            
+            else:  # CLAHE
+                c1, c2 = st.columns(2)
+                clip = c1.slider("Clip Limit", 1.0, 10.0, 2.0, 0.1)
+                tile = c2.slider("Tile Size", 2, 16, 8)
+                if st.button("Apply CLAHE", type="primary"):
+                    processed = ImageProcessor.enhancement(original, "clahe", clip=clip, tile=tile)
+                    st.session_state.processed_img = processed
+                    display_images(original, processed, "Original", "CLAHE")
+        
+        # Frequency Domain Tab
+        with tab5:
+            freq_op = st.selectbox("Operation", ["FFT", "Low Pass Filter", "High Pass Filter"])
+            
+            if freq_op == "FFT":
+                if st.button("Apply FFT", type="primary"):
+                    spectrum = ImageProcessor.frequency_domain(original, "fft")
+                    st.session_state.processed_img = spectrum
+                    display_images(original, spectrum, "Original", "Magnitude Spectrum")
+            
+            else:
+                cutoff = st.slider("Cutoff Frequency", 10, 200, 50)
+                op_type = "lowpass" if freq_op == "Low Pass Filter" else "highpass"
+                if st.button(f"Apply {freq_op}", type="primary"):
+                    processed = ImageProcessor.frequency_domain(original, op_type, cutoff=cutoff)
+                    st.session_state.processed_img = processed
+                    display_images(original, processed, "Original", freq_op)
+        
+        # Analysis Tab
+        with tab6:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Original Stats**")
+                st.write(f"Mean: {np.mean(original):.2f}")
+                st.write(f"Std: {np.std(original):.2f}")
+                st.write(f"Min: {np.min(original)}")
+                st.write(f"Max: {np.max(original)}")
+                if st.button("Show Original Histogram"):
+                    show_histogram(original, "Original Histogram")
+            
+            with col2:
+                if st.session_state.processed_img is not None:
+                    processed = st.session_state.processed_img
+                    st.write("**Processed Stats**")
+                    st.write(f"Mean: {np.mean(processed):.2f}")
+                    st.write(f"Std: {np.std(processed):.2f}")
+                    st.write(f"Min: {np.min(processed)}")
+                    st.write(f"Max: {np.max(processed)}")
+                    if st.button("Show Processed Histogram"):
+                        show_histogram(processed, "Processed Histogram")
+                else:
+                    st.info("Apply an operation first")
+        
+        # Download Section
+        if st.session_state.processed_img is not None:
+            st.header("💾 Download")
+            processed = st.session_state.processed_img
+            if len(processed.shape) == 3:
+                pil_img = Image.fromarray(cv2.cvtColor(processed, cv2.COLOR_BGR2RGB))
+            else:
+                pil_img = Image.fromarray(processed)
+            
+            buf = io.BytesIO()
+            pil_img.save(buf, format='PNG')
+            st.download_button("Download Processed Image", buf.getvalue(), "processed.png", "image/png")
+    
+    else:
+        st.info("👆 Upload an image to start processing!")
+
+if __name__ == "__main__":
+    main()
