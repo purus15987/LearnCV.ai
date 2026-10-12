@@ -1,3 +1,5 @@
+![JBIET](https://www.jbiet.edu.in/assets/images/JB-new_logo-2.jpg)
+
 # Computer Vision Course (2025)
 
 Welcome to the [official course homepage](https://purus15987.github.io/LearnCV.ai/) for **Computer Vision**, taught by [M. Purushotham, ML Researcher (GenAI/CV focus)](https://github.com/purus15987).
